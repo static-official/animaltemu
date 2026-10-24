@@ -1,4 +1,3 @@
-
 import * as THREE from "https://unpkg.com/three@0.169.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.169.0/examples/jsm/loaders/GLTFLoader.js";
 
@@ -45,7 +44,7 @@ function showError(error) {
     errorText.hidden = false;
     errorText.textContent =
       `${error?.message || String(error)}. ` +
-      "Check the map download URL, CORS permissions, and player.glb location.";
+      "Check that map.glb and player.glb are in your root folder.";
   }
 }
 
@@ -119,8 +118,6 @@ const keys = new Set();
 // MAP DOWNLOADER
 // ======================================================
 
-// Downloads the map with visible byte progress.
-// Validates that the response is a GLB, not an HTML page.
 async function downloadMap(url) {
   if (!url) {
     throw new Error("No map URL was found in index.html.");
@@ -138,8 +135,7 @@ async function downloadMap(url) {
     });
   } catch (error) {
     throw new Error(
-      "Could not access the map host. The server may block CORS requests, " +
-      "or the download URL may be unavailable. " +
+      "Could not access map.glb. Ensure the file is pushed to your repository. " +
       (error?.message || "")
     );
   }
@@ -179,8 +175,6 @@ async function downloadMap(url) {
           percent
         );
       } else {
-        // The server did not provide a total size.
-        // Show downloaded megabytes instead of a fake percentage.
         setLoading(
           `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
           0
@@ -206,16 +200,14 @@ async function downloadMap(url) {
     throw new Error("The downloaded map is empty or incomplete.");
   }
 
-  // Binary glTF files begin with the four ASCII bytes "glTF".
   const magic = new TextDecoder().decode(
     new Uint8Array(buffer, 0, 4)
   );
 
   if (magic !== "glTF") {
     throw new Error(
-      "The map link did not return a GLB file. " +
-      `Received content type: ${contentType || "unknown"}. ` +
-      "The link may be returning an HTML download page instead."
+      "The map file is not a valid GLB file. " +
+      `Received content type: ${contentType || "unknown"}.`
     );
   }
 
@@ -283,7 +275,6 @@ function preparePlayer(root) {
     root.scale.multiplyScalar(PLAYER_HEIGHT / size.y);
   }
 
-  // Move the model so its feet are at local Y = 0.
   const scaledBox = new THREE.Box3().setFromObject(root);
   root.position.y -= scaledBox.min.y;
 
@@ -326,8 +317,6 @@ async function loadPlayer() {
 // GROUND DETECTION
 // ======================================================
 
-// This is basic ground detection, not full wall collision.
-// It casts a ray downward to find map surfaces.
 function getGroundHeight(x, z, fallbackY) {
   if (mapMeshes.length === 0) return fallbackY;
 
@@ -338,7 +327,6 @@ function getGroundHeight(x, z, fallbackY) {
 
   const hits = raycaster.intersectObjects(mapMeshes, false);
 
-  // Avoid snapping onto surfaces significantly above the player.
   const hit = hits.find(
     (item) => item.point.y <= fallbackY + 2.5
   );
@@ -525,7 +513,6 @@ function getInput() {
 function updateGame(dt) {
   if (!player) return;
 
-  // Camera look joystick
   yaw -= looking.x * dt * 2.4;
 
   pitch = THREE.MathUtils.clamp(
@@ -557,7 +544,6 @@ function updateGame(dt) {
     player.rotation.y = Math.atan2(move.x, move.z);
   }
 
-  // Gravity and ground detection
   const floor = getGroundHeight(
     player.position.x,
     player.position.z,
@@ -579,7 +565,6 @@ function updateGame(dt) {
     grounded = false;
   }
 
-  // Third-person camera
   const target = player.position.clone().add(
     new THREE.Vector3(0, PLAYER_HEIGHT * 0.72, 0)
   );
