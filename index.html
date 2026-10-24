@@ -1,0 +1,185 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#10141a">
+  <title>Animal Company Web</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #10141a;
+      font-family: Arial, sans-serif;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      background: #10141a;
+      color: white;
+      text-align: center;
+      padding: 24px;
+    }
+
+    #loading-card {
+      width: min(420px, 100%);
+    }
+
+    #bar {
+      height: 10px;
+      margin-top: 18px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: #303846;
+    }
+
+    #bar-fill {
+      width: 0%;
+      height: 100%;
+      background: #7de3a1;
+      transition: width 0.15s;
+    }
+
+    #error {
+      color: #ffaaa7;
+      overflow-wrap: anywhere;
+    }
+
+    #hud {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .stick {
+      position: absolute;
+      bottom: 28px;
+      width: 132px;
+      height: 132px;
+      border: 2px solid #ffffff55;
+      border-radius: 50%;
+      background: #17202c77;
+      pointer-events: auto;
+      touch-action: none;
+    }
+
+    #move-stick {
+      left: 22px;
+    }
+
+    #look-stick {
+      right: 22px;
+    }
+
+    .knob {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 54px;
+      height: 54px;
+      margin: -27px 0 0 -27px;
+      border-radius: 50%;
+      background: #dce6f0bb;
+      border: 2px solid #ffffff99;
+      pointer-events: none;
+    }
+
+    #jump {
+      position: absolute;
+      right: 40px;
+      bottom: 178px;
+      width: 78px;
+      height: 78px;
+      border: 2px solid #ffffff99;
+      border-radius: 50%;
+      background: #7de3a1dd;
+      color: #102018;
+      font-weight: bold;
+      pointer-events: auto;
+      touch-action: none;
+    }
+
+    #hint {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: #10141a99;
+      color: white;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 600px) {
+      .stick {
+        width: 115px;
+        height: 115px;
+      }
+
+      .knob {
+        width: 48px;
+        height: 48px;
+        margin: -24px 0 0 -24px;
+      }
+    }
+  </style>
+
+  <!-- Your map's direct-download URL -->
+  <meta
+    name="map-url"
+    content="https://host.hosti.in/dl/bWFwLmdsYnxodHRwczovL2dvZmlsZS5pby9kL2hsckNHVUVm?fn=map.glb"
+  >
+</head>
+
+<body>
+  <div id="loading">
+    <div id="loading-card">
+      <h1>Animal Company Web</h1>
+      <p id="loading-status">Starting game...</p>
+      <div id="bar">
+        <div id="bar-fill"></div>
+      </div>
+      <p id="error" hidden></p>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div id="hint">Left: Move · Right: Look · Jump: Jump</div>
+
+    <div class="stick" id="move-stick">
+      <div class="knob"></div>
+    </div>
+
+    <div class="stick" id="look-stick">
+      <div class="knob"></div>
+    </div>
+
+    <button id="jump" type="button">JUMP</button>
+  </div>
+
+  <script type="module" src="./game.js"></script>
+</body>
+</html>
