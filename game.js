@@ -1,42 +1,80 @@
 
 import * as THREE from "https://unpkg.com/three@0.169.0/build/three.module.js";
-
 import { GLTFLoader } from "https://unpkg.com/three@0.169.0/examples/jsm/loaders/GLTFLoader.js";
 
-// URLs
-const mapUrl = document.querySelector('meta[name="map-url"]').content;
-const playerUrl = "./player.glb";
+// ======================================================
+// CONFIGURATION
+// ======================================================
 
-// Loading screen
+const MAP_URL =
+  document.querySelector('meta[name="map-url"]')?.content;
+
+const PLAYER_URL = "./player.glb";
+
+const PLAYER_HEIGHT = 1.5;
+const MOVE_SPEED = 6.2;
+const JUMP_SPEED = 8.2;
+const GRAVITY = 22;
+const CAMERA_DISTANCE = 5.5;
+
+// ======================================================
+// UI
+// ======================================================
+
 const loading = document.querySelector("#loading");
 const statusText = document.querySelector("#loading-status");
 const progressFill = document.querySelector("#bar-fill");
 const errorText = document.querySelector("#error");
 const hud = document.querySelector("#hud");
 
-// Scene
+function setLoading(message, percent = 0) {
+  if (statusText) statusText.textContent = message;
+  if (progressFill) {
+    progressFill.style.width = `${THREE.MathUtils.clamp(percent, 0, 100)}%`;
+  }
+}
+
+function showError(error) {
+  console.error("Game loading failed:", error);
+
+  if (statusText) {
+    statusText.textContent = "Could not start the game.";
+  }
+
+  if (errorText) {
+    errorText.hidden = false;
+    errorText.textContent =
+      `${error?.message || String(error)}. ` +
+      "Check the map download URL, CORS permissions, and player.glb location.";
+  }
+}
+
+// ======================================================
+// THREE.JS SCENE
+// ======================================================
+
 const scene = new THREE.Scene();
+
 scene.background = new THREE.Color(0x91b9d3);
 scene.fog = new THREE.Fog(0x91b9d3, 90, 450);
 
-// Camera
 const camera = new THREE.PerspectiveCamera(
   70,
-  innerWidth / innerHeight,
+  window.innerWidth / window.innerHeight,
   0.1,
   1500
 );
 
-// Renderer
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: "high-performance"
 });
 
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.75));
-renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 document.body.appendChild(renderer.domElement);
 
@@ -51,7 +89,10 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
 scene.add(sun);
 
-// Game objects
+// ======================================================
+// GAME STATE
+// ======================================================
+
 const loader = new GLTFLoader();
 const raycaster = new THREE.Raycaster();
 const down = new THREE.Vector3(0, -1, 0);
@@ -61,8 +102,8 @@ scene.add(mapRoot);
 
 let player = null;
 let mapMeshes = [];
+
 let groundY = 0;
-let playerHeight = 1.5;
 let verticalVelocity = 0;
 let grounded = false;
 
@@ -74,37 +115,175 @@ const movement = { x: 0, y: 0 };
 const looking = { x: 0, y: 0 };
 const keys = new Set();
 
-const gravity = 22;
-const moveSpeed = 6.2;
-const jumpSpeed = 8.2;
+// ======================================================
+// MAP DOWNLOADER
+// ======================================================
 
-// Loading helpers
-function setLoading(message, percent = 0) {
-  statusText.textContent = message;
-  progressFill.style.width = `${percent}%`;
+// Downloads the map with visible byte progress.
+// Validates that the response is a GLB, not an HTML page.
+async function downloadMap(url) {
+  if (!url) {
+    throw new Error("No map URL was found in index.html.");
+  }
+
+  setLoading("Connecting to map host...", 0);
+
+  let response;
+
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      redirect: "follow"
+    });
+  } catch (error) {
+    throw new Error(
+      "Could not access the map host. The server may block CORS requests, " +
+      "or the download URL may be unavailable. " +
+      (error?.message || "")
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(`Map server returned HTTP ${response.status}.`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const contentLength = Number(
+    response.headers.get("content-length")
+  ) || 0;
+
+  let buffer;
+
+  if (response.body && response.body.getReader) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+
+    while (true) {
+      const result = await reader.read();
+
+      if (result.done) break;
+
+      chunks.push(result.value);
+      received += result.value.byteLength;
+
+      if (contentLength > 0) {
+        const percent = Math.min(
+          60,
+          Math.round((received / contentLength) * 60)
+        );
+
+        setLoading(
+          `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
+          percent
+        );
+      } else {
+        // The server did not provide a total size.
+        // Show downloaded megabytes instead of a fake percentage.
+        setLoading(
+          `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
+          0
+        );
+      }
+    }
+
+    const combined = new Uint8Array(received);
+    let offset = 0;
+
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    buffer = combined.buffer;
+  } else {
+    setLoading("Downloading map...", 10);
+    buffer = await response.arrayBuffer();
+  }
+
+  if (buffer.byteLength < 12) {
+    throw new Error("The downloaded map is empty or incomplete.");
+  }
+
+  // Binary glTF files begin with the four ASCII bytes "glTF".
+  const magic = new TextDecoder().decode(
+    new Uint8Array(buffer, 0, 4)
+  );
+
+  if (magic !== "glTF") {
+    throw new Error(
+      "The map link did not return a GLB file. " +
+      `Received content type: ${contentType || "unknown"}. ` +
+      "The link may be returning an HTML download page instead."
+    );
+  }
+
+  return buffer;
 }
 
-function showError(error) {
-  console.error(error);
-  statusText.textContent = "Could not start the game.";
-  errorText.hidden = false;
+// ======================================================
+// LOAD AND PREPARE MAP
+// ======================================================
 
-  errorText.textContent =
-    "Check that map.glb can be loaded from its host and that player.glb is next to index.html. " +
-    (error?.message || String(error));
+function collectMapMeshes(root) {
+  const meshes = [];
+
+  root.updateMatrixWorld(true);
+
+  root.traverse((object) => {
+    if (!object.isMesh || !object.geometry) return;
+
+    object.castShadow = true;
+    object.receiveShadow = true;
+
+    meshes.push(object);
+  });
+
+  return meshes;
 }
 
-// Fit the player model to approximately 1.5 units tall
-function fitPlayerModel(root) {
+async function loadMap() {
+  const buffer = await downloadMap(MAP_URL);
+
+  setLoading("Parsing map geometry...", 62);
+
+  const gltf = await new Promise((resolve, reject) => {
+    loader.parse(buffer, "", resolve, reject);
+  });
+
+  mapRoot.add(gltf.scene);
+  mapRoot.updateMatrixWorld(true);
+
+  mapMeshes = collectMapMeshes(mapRoot);
+
+  if (mapMeshes.length === 0) {
+    throw new Error("The map loaded, but it contains no renderable meshes.");
+  }
+
+  console.log(
+    `Map loaded: ${mapMeshes.length} mesh objects, ` +
+    `${(buffer.byteLength / 1048576).toFixed(1)} MB`
+  );
+
+  setLoading("Map loaded!", 68);
+}
+
+// ======================================================
+// LOAD PLAYER
+// ======================================================
+
+function preparePlayer(root) {
   const box = new THREE.Box3().setFromObject(root);
   const size = new THREE.Vector3();
 
   box.getSize(size);
 
   if (size.y > 0.0001) {
-    root.scale.multiplyScalar(playerHeight / size.y);
+    root.scale.multiplyScalar(PLAYER_HEIGHT / size.y);
   }
 
+  // Move the model so its feet are at local Y = 0.
   const scaledBox = new THREE.Box3().setFromObject(root);
   root.position.y -= scaledBox.min.y;
 
@@ -116,27 +295,41 @@ function fitPlayerModel(root) {
   });
 }
 
-// Find map meshes for basic ground detection
-function collectMapMeshes(root) {
-  const meshes = [];
+async function loadPlayer() {
+  setLoading("Downloading player model...", 70);
 
-  root.updateMatrixWorld(true);
-
-  root.traverse((object) => {
-    if (!object.isMesh || !object.geometry) return;
-
-    object.castShadow = true;
-    object.receiveShadow = true;
-    meshes.push(object);
+  const gltf = await new Promise((resolve, reject) => {
+    loader.load(
+      PLAYER_URL,
+      resolve,
+      (event) => {
+        if (event.total > 0) {
+          setLoading(
+            "Downloading player model...",
+            70 + (event.loaded / event.total) * 25
+          );
+        }
+      },
+      reject
+    );
   });
 
-  return meshes;
+  player = gltf.scene;
+
+  preparePlayer(player);
+  scene.add(player);
+
+  console.log("Player model loaded.");
 }
 
-// Basic raycast ground detection.
-// This is not full wall collision.
+// ======================================================
+// GROUND DETECTION
+// ======================================================
+
+// This is basic ground detection, not full wall collision.
+// It casts a ray downward to find map surfaces.
 function getGroundHeight(x, z, fallbackY) {
-  if (!mapMeshes.length) return fallbackY;
+  if (mapMeshes.length === 0) return fallbackY;
 
   const origin = new THREE.Vector3(x, fallbackY + 30, z);
 
@@ -145,44 +338,47 @@ function getGroundHeight(x, z, fallbackY) {
 
   const hits = raycaster.intersectObjects(mapMeshes, false);
 
-  const valid = hits.find(
-    (hit) => hit.point.y <= fallbackY + 2.5
+  // Avoid snapping onto surfaces significantly above the player.
+  const hit = hits.find(
+    (item) => item.point.y <= fallbackY + 2.5
   );
 
-  return valid ? valid.point.y : fallbackY;
+  return hit ? hit.point.y : fallbackY;
 }
 
-// Set initial player location
 function setPlayerStart() {
   if (!player) return;
 
-  const box = new THREE.Box3().setFromObject(mapRoot);
+  const bounds = new THREE.Box3().setFromObject(mapRoot);
 
   if (
-    Number.isFinite(box.min.x) &&
-    Number.isFinite(box.max.x) &&
-    box.max.x > box.min.x
+    Number.isFinite(bounds.min.x) &&
+    Number.isFinite(bounds.max.x) &&
+    bounds.max.x > bounds.min.x
   ) {
     player.position.set(
-      (box.min.x + box.max.x) / 2,
-      box.max.y + 2,
-      (box.min.z + box.max.z) / 2
+      (bounds.min.x + bounds.max.x) / 2,
+      bounds.max.y + 2,
+      (bounds.min.z + bounds.max.z) / 2
     );
   } else {
     player.position.set(0, 2, 0);
   }
 
-  const y = getGroundHeight(
+  const floor = getGroundHeight(
     player.position.x,
     player.position.z,
     player.position.y
   );
 
-  player.position.y = y + 0.04;
-  groundY = y;
+  player.position.y = floor + 0.04;
+  groundY = floor;
 }
 
-// Joystick controls
+// ======================================================
+// MOBILE JOYSTICKS
+// ======================================================
+
 function makeJoystick(element, output) {
   const knob = element.querySelector(".knob");
 
@@ -194,6 +390,7 @@ function makeJoystick(element, output) {
   function reset() {
     output.x = 0;
     output.y = 0;
+
     knob.style.transform = "translate(0px, 0px)";
     pointerId = null;
   }
@@ -203,8 +400,11 @@ function makeJoystick(element, output) {
 
     const dx = event.clientX - centerX;
     const dy = event.clientY - centerY;
-    const length = Math.hypot(dx, dy);
-    const scale = length > maxRadius ? maxRadius / length : 1;
+
+    const distance = Math.hypot(dx, dy);
+    const scale = distance > maxRadius
+      ? maxRadius / distance
+      : 1;
 
     const x = dx * scale;
     const y = dy * scale;
@@ -251,20 +451,26 @@ makeJoystick(
   looking
 );
 
-// Jump button
+// ======================================================
+// JUMP BUTTON
+// ======================================================
+
 document.querySelector("#jump").addEventListener(
   "pointerdown",
   (event) => {
     event.preventDefault();
 
     if (grounded) {
-      verticalVelocity = jumpSpeed;
+      verticalVelocity = JUMP_SPEED;
       grounded = false;
     }
   }
 );
 
-// Keyboard controls for desktop testing
+// ======================================================
+// KEYBOARD CONTROLS
+// ======================================================
+
 window.addEventListener("keydown", (event) => {
   keys.add(event.code);
 
@@ -276,7 +482,7 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (event.code === "Space" && grounded) {
-    verticalVelocity = jumpSpeed;
+    verticalVelocity = JUMP_SPEED;
     grounded = false;
   }
 }, { passive: false });
@@ -285,9 +491,14 @@ window.addEventListener("keyup", (event) => {
   keys.delete(event.code);
 });
 
-window.addEventListener("blur", () => keys.clear());
+window.addEventListener("blur", () => {
+  keys.clear();
+});
 
-// Read joystick and keyboard input
+// ======================================================
+// MOVEMENT INPUT
+// ======================================================
+
 function getInput() {
   let x = movement.x;
   let y = movement.y;
@@ -307,10 +518,14 @@ function getInput() {
   return { x, y };
 }
 
-// Update movement and camera
+// ======================================================
+// GAME UPDATE
+// ======================================================
+
 function updateGame(dt) {
   if (!player) return;
 
+  // Camera look joystick
   yaw -= looking.x * dt * 2.4;
 
   pitch = THREE.MathUtils.clamp(
@@ -336,20 +551,20 @@ function updateGame(dt) {
   if (move.lengthSq() > 0.0001) {
     move.normalize();
 
-    player.position.x += move.x * moveSpeed * dt;
-    player.position.z += move.z * moveSpeed * dt;
+    player.position.x += move.x * MOVE_SPEED * dt;
+    player.position.z += move.z * MOVE_SPEED * dt;
 
     player.rotation.y = Math.atan2(move.x, move.z);
   }
 
-  // Gravity and basic ground detection
+  // Gravity and ground detection
   const floor = getGroundHeight(
     player.position.x,
     player.position.z,
     groundY
   );
 
-  verticalVelocity -= gravity * dt;
+  verticalVelocity -= GRAVITY * dt;
   player.position.y += verticalVelocity * dt;
 
   if (
@@ -366,95 +581,29 @@ function updateGame(dt) {
 
   // Third-person camera
   const target = player.position.clone().add(
-    new THREE.Vector3(0, playerHeight * 0.72, 0)
+    new THREE.Vector3(0, PLAYER_HEIGHT * 0.72, 0)
   );
 
-  const distance = 5.5;
-  const horizontal = Math.cos(pitch) * distance;
+  const horizontal = Math.cos(pitch) * CAMERA_DISTANCE;
 
-  const camOffset = new THREE.Vector3(
+  const cameraOffset = new THREE.Vector3(
     Math.sin(yaw) * horizontal,
-    Math.sin(pitch) * distance + 1,
+    Math.sin(pitch) * CAMERA_DISTANCE + 1,
     Math.cos(yaw) * horizontal
   );
 
   camera.position.lerp(
-    target.clone().add(camOffset),
+    target.clone().add(cameraOffset),
     1 - Math.exp(-8 * dt)
   );
 
   camera.lookAt(target);
 }
 
-// Load map and player
-async function loadGame() {
-  if (!mapUrl) {
-    throw new Error("Map URL missing from index.html.");
-  }
+// ======================================================
+// RENDER LOOP
+// ======================================================
 
-  setLoading("Downloading map...", 2);
-
-  const mapGltf = await new Promise((resolve, reject) => {
-    loader.load(
-      mapUrl,
-      resolve,
-      (event) => {
-        if (event.total > 0) {
-          setLoading(
-            "Downloading map...",
-            2 + (event.loaded / event.total) * 58
-          );
-        }
-      },
-      reject
-    );
-  });
-
-  mapRoot.add(mapGltf.scene);
-  mapRoot.updateMatrixWorld(true);
-
-  mapMeshes = collectMapMeshes(mapRoot);
-
-  if (!mapMeshes.length) {
-    throw new Error("No map mesh geometry was found.");
-  }
-
-  setLoading("Map loaded. Downloading player...", 65);
-
-  const playerGltf = await new Promise((resolve, reject) => {
-    loader.load(
-      playerUrl,
-      resolve,
-      (event) => {
-        if (event.total > 0) {
-          setLoading(
-            "Downloading player...",
-            65 + (event.loaded / event.total) * 30
-          );
-        }
-      },
-      reject
-    );
-  });
-
-  player = playerGltf.scene;
-
-  fitPlayerModel(player);
-  scene.add(player);
-  setPlayerStart();
-
-  setLoading("Ready!", 100);
-
-  await new Promise((resolve) => setTimeout(resolve, 250));
-
-  loading.style.display = "none";
-  hud.style.display = "block";
-
-  lastTime = performance.now();
-  animate();
-}
-
-// Main render loop
 function animate(now = performance.now()) {
   requestAnimationFrame(animate);
 
@@ -465,17 +614,45 @@ function animate(now = performance.now()) {
   renderer.render(scene, camera);
 }
 
-// Resize handling
+// ======================================================
+// WINDOW RESIZE
+// ======================================================
+
 window.addEventListener("resize", () => {
-  camera.aspect = innerWidth / innerHeight;
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 
   renderer.setPixelRatio(
-    Math.min(devicePixelRatio || 1, 1.75)
+    Math.min(window.devicePixelRatio || 1, 1.75)
   );
 });
 
-// Start
-loadGame().catch(showError);
+// ======================================================
+// START GAME
+// ======================================================
+
+async function startGame() {
+  try {
+    await loadMap();
+    await loadPlayer();
+
+    setLoading("Setting up game...", 98);
+    setPlayerStart();
+
+    setLoading("Ready!", 100);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    loading.style.display = "none";
+    hud.style.display = "block";
+
+    lastTime = performance.now();
+    animate();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+startGame();
