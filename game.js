@@ -27,7 +27,7 @@ const hud = document.querySelector("#hud");
 function setLoading(message, percent = 0) {
   if (statusText) statusText.textContent = message;
   if (progressFill) {
-    progressFill.style.width = `${THREE.MathUtils.clamp(percent, 0, 100)}%`;
+    progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   }
 }
 
@@ -70,6 +70,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 scene.add(new THREE.HemisphereLight(0xe5f4ff, 0x59604c, 2));
+
 const sun = new THREE.DirectionalLight(0xffffff, 2.4);
 sun.position.set(30, 70, 20);
 sun.castShadow = true;
@@ -100,14 +101,14 @@ const looking = { x: 0, y: 0 };
 const keys = new Set();
 
 // ======================================================
-// MAP DOWNLOADER — FIXED: early progress ticks so bar moves
+// MAP DOWNLOADER
 // ======================================================
 
 async function downloadMap(url) {
-  if (!url) throw new Error("No map URL was found in index.html.");
+  if (!url) throw new Error("No map URL found in index.html meta tag.");
 
-  // ✅ TICK 1 — show immediately so bar isn't frozen at 0
-  setLoading("Connecting to map host...", 5);
+  setLoading("Connecting to map...", 5);
+  await new Promise(r => setTimeout(r, 50));
 
   let response;
   try {
@@ -118,20 +119,19 @@ async function downloadMap(url) {
     });
   } catch (error) {
     throw new Error(
-      "Could not access map.glb. Make sure the file exists in your folder. " +
+      "Fetch failed — CORS blocked or server unreachable. " +
       (error?.message || "")
     );
   }
 
   if (!response.ok) {
-    throw new Error(`Map server returned HTTP ${response.status}.`);
+    throw new Error(`Server returned HTTP ${response.status} for map.glb`);
   }
 
-  // ✅ TICK 2 — connected, update before reading body
-  setLoading("Connected! Reading map data...", 12);
+  setLoading("Connected! Downloading map...", 12);
 
-  const contentType = response.headers.get("content-type") || "";
   const contentLength = Number(response.headers.get("content-length")) || 0;
+  const contentType = response.headers.get("content-type") || "";
 
   let buffer;
 
@@ -148,25 +148,22 @@ async function downloadMap(url) {
       received += result.value.byteLength;
 
       if (contentLength > 0) {
-        // map 0→100% download to 12→60% of bar
-        const downloadPercent = received / contentLength;
-        const barPercent = 12 + downloadPercent * 48;
+        const pct = 12 + (received / contentLength) * 48;
         setLoading(
-          `Downloading map: ${(received / 1048576).toFixed(1)} MB / ${(contentLength / 1048576).toFixed(1)} MB`,
-          barPercent
+          `Downloading: ${(received / 1048576).toFixed(1)} MB / ${(contentLength / 1048576).toFixed(1)} MB`,
+          pct
         );
       } else {
-        // unknown size — just tick up so it doesn't freeze
         const fakePct = Math.min(55, 12 + (received / 1048576) * 3);
         setLoading(
-          `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
+          `Downloading: ${(received / 1048576).toFixed(1)} MB`,
           fakePct
         );
       }
     }
 
-    // ✅ TICK 3 — assembling buffer
-    setLoading("Assembling map...", 60);
+    setLoading("Assembling map data...", 60);
+    await new Promise(r => setTimeout(r, 30));
 
     const combined = new Uint8Array(received);
     let offset = 0;
@@ -175,6 +172,7 @@ async function downloadMap(url) {
       offset += chunk.byteLength;
     }
     buffer = combined.buffer;
+
   } else {
     setLoading("Downloading map...", 20);
     buffer = await response.arrayBuffer();
@@ -182,14 +180,13 @@ async function downloadMap(url) {
   }
 
   if (buffer.byteLength < 12) {
-    throw new Error("The downloaded map is empty or incomplete.");
+    throw new Error("Map file is empty or incomplete.");
   }
 
   const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 4));
   if (magic !== "glTF") {
     throw new Error(
-      "The map file is not a valid GLB file. " +
-      `Received content-type: ${contentType || "unknown"}.`
+      `Map is not a valid GLB file. Content-Type was: ${contentType || "unknown"}`
     );
   }
 
@@ -197,7 +194,7 @@ async function downloadMap(url) {
 }
 
 // ======================================================
-// LOAD AND PREPARE MAP
+// LOAD MAP
 // ======================================================
 
 function collectMapMeshes(root) {
@@ -216,6 +213,7 @@ async function loadMap() {
   const buffer = await downloadMap(MAP_URL);
 
   setLoading("Parsing map geometry...", 62);
+  await new Promise(r => setTimeout(r, 30));
 
   const gltf = await new Promise((resolve, reject) => {
     loader.parse(buffer, "", resolve, reject);
@@ -226,15 +224,11 @@ async function loadMap() {
   mapMeshes = collectMapMeshes(mapRoot);
 
   if (mapMeshes.length === 0) {
-    throw new Error("The map loaded, but it contains no renderable meshes.");
+    throw new Error("Map loaded but has no renderable meshes.");
   }
 
-  console.log(
-    `Map loaded: ${mapMeshes.length} mesh objects, ` +
-    `${(buffer.byteLength / 1048576).toFixed(1)} MB`
-  );
-
-  setLoading("Map loaded!", 68);
+  console.log(`Map: ${mapMeshes.length} meshes, ${(buffer.byteLength / 1048576).toFixed(1)} MB`);
+  setLoading("Map ready!", 68);
 }
 
 // ======================================================
@@ -281,7 +275,7 @@ async function loadPlayer() {
   player = gltf.scene;
   preparePlayer(player);
   scene.add(player);
-  console.log("Player model loaded.");
+  console.log("Player loaded.");
 }
 
 // ======================================================
@@ -349,14 +343,12 @@ function makeJoystick(element, output) {
 
   function update(event) {
     if (pointerId !== event.pointerId) return;
-
     const dx = event.clientX - centerX;
     const dy = event.clientY - centerY;
     const distance = Math.hypot(dx, dy);
     const scale = distance > maxRadius ? maxRadius / distance : 1;
     const x = dx * scale;
     const y = dy * scale;
-
     output.x = x / maxRadius;
     output.y = y / maxRadius;
     knob.style.transform = `translate(${x}px, ${y}px)`;
@@ -366,7 +358,6 @@ function makeJoystick(element, output) {
     event.preventDefault();
     pointerId = event.pointerId;
     element.setPointerCapture(pointerId);
-
     const rect = element.getBoundingClientRect();
     centerX = rect.left + rect.width / 2;
     centerY = rect.top + rect.height / 2;
@@ -387,7 +378,7 @@ makeJoystick(document.querySelector("#move-stick"), movement);
 makeJoystick(document.querySelector("#look-stick"), looking);
 
 // ======================================================
-// JUMP BUTTON
+// JUMP
 // ======================================================
 
 document.querySelector("#jump").addEventListener("pointerdown", (event) => {
@@ -399,16 +390,14 @@ document.querySelector("#jump").addEventListener("pointerdown", (event) => {
 });
 
 // ======================================================
-// KEYBOARD CONTROLS
+// KEYBOARD
 // ======================================================
 
 window.addEventListener("keydown", (event) => {
   keys.add(event.code);
-
   if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(event.code)) {
     event.preventDefault();
   }
-
   if (event.code === "Space" && grounded) {
     verticalVelocity = JUMP_SPEED;
     grounded = false;
@@ -419,21 +408,18 @@ window.addEventListener("keyup", (event) => keys.delete(event.code));
 window.addEventListener("blur", () => keys.clear());
 
 // ======================================================
-// MOVEMENT INPUT
+// INPUT
 // ======================================================
 
 function getInput() {
   let x = movement.x;
   let y = movement.y;
-
   if (keys.has("KeyA") || keys.has("ArrowLeft")) x -= 1;
   if (keys.has("KeyD") || keys.has("ArrowRight")) x += 1;
   if (keys.has("KeyW") || keys.has("ArrowUp")) y -= 1;
   if (keys.has("KeyS") || keys.has("ArrowDown")) y += 1;
-
   const length = Math.hypot(x, y);
   if (length > 1) { x /= length; y /= length; }
-
   return { x, y };
 }
 
@@ -445,7 +431,7 @@ function updateGame(dt) {
   if (!player) return;
 
   yaw -= looking.x * dt * 2.4;
-  pitch = THREE.MathUtils.clamp(pitch - looking.y * dt * 1.8, -0.45, 0.85);
+  pitch = Math.max(-0.45, Math.min(0.85, pitch - looking.y * dt * 1.8));
 
   const input = getInput();
   const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
@@ -462,7 +448,11 @@ function updateGame(dt) {
     player.rotation.y = Math.atan2(move.x, move.z);
   }
 
-  const floor = getGroundHeight(player.position.x, player.position.z, groundY);
+  const floor = getGroundHeight(
+    player.position.x,
+    player.position.z,
+    groundY
+  );
 
   verticalVelocity -= GRAVITY * dt;
   player.position.y += verticalVelocity * dt;
@@ -487,7 +477,10 @@ function updateGame(dt) {
     Math.cos(yaw) * horizontal
   );
 
-  camera.position.lerp(target.clone().add(cameraOffset), 1 - Math.exp(-8 * dt));
+  camera.position.lerp(
+    target.clone().add(cameraOffset),
+    1 - Math.exp(-8 * dt)
+  );
   camera.lookAt(target);
 }
 
@@ -504,7 +497,7 @@ function animate(now = performance.now()) {
 }
 
 // ======================================================
-// WINDOW RESIZE
+// RESIZE
 // ======================================================
 
 window.addEventListener("resize", () => {
@@ -515,14 +508,48 @@ window.addEventListener("resize", () => {
 });
 
 // ======================================================
-// START
+// START — on-screen debug so you see it on iPhone
 // ======================================================
 
 async function startGame() {
   try {
-    // ✅ immediate tick so bar moves from frame 1
     setLoading("Starting game...", 2);
-    await new Promise(r => setTimeout(r, 30)); // let browser paint
+    await new Promise(r => setTimeout(r, 80));
+
+    if (!MAP_URL) {
+      throw new Error("map-url meta tag is missing or empty in index.html");
+    }
+
+    setLoading("Protocol: " + window.location.protocol, 3);
+    await new Promise(r => setTimeout(r, 400));
+
+    if (window.location.protocol === "file:") {
+      throw new Error(
+        "Opened as file:// — needs a real server. Host on GitHub Pages, Netlify, or itch.io"
+      );
+    }
+
+    setLoading("Checking: " + MAP_URL, 4);
+    await new Promise(r => setTimeout(r, 400));
+
+    const probe = await Promise.race([
+      fetch(MAP_URL, { method: "HEAD", mode: "cors" })
+        .catch(e => ({ ok: false, _err: e })),
+      new Promise(r =>
+        setTimeout(() =>
+          r({ ok: false, _err: new Error("Timed out — server not responding or CORS blocked") }),
+          9000
+        )
+      )
+    ]);
+
+    if (!probe.ok) {
+      const why = probe._err?.message || `HTTP ${probe.status}`;
+      throw new Error("map.glb unreachable: " + why);
+    }
+
+    setLoading("map.glb found! Starting load...", 6);
+    await new Promise(r => setTimeout(r, 200));
 
     await loadMap();
     await loadPlayer();
@@ -537,6 +564,7 @@ async function startGame() {
     hud.style.display = "block";
     lastTime = performance.now();
     animate();
+
   } catch (error) {
     showError(error);
   }
