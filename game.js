@@ -5,9 +5,7 @@ import { GLTFLoader } from "https://unpkg.com/three@0.169.0/examples/jsm/loaders
 // CONFIGURATION
 // ======================================================
 
-const MAP_URL =
-  document.querySelector('meta[name="map-url"]')?.content;
-
+const MAP_URL = document.querySelector('meta[name="map-url"]')?.content;
 const PLAYER_URL = "./player.glb";
 
 const PLAYER_HEIGHT = 1.5;
@@ -35,11 +33,7 @@ function setLoading(message, percent = 0) {
 
 function showError(error) {
   console.error("Game loading failed:", error);
-
-  if (statusText) {
-    statusText.textContent = "Could not start the game.";
-  }
-
+  if (statusText) statusText.textContent = "Could not start the game.";
   if (errorText) {
     errorText.hidden = false;
     errorText.textContent =
@@ -53,7 +47,6 @@ function showError(error) {
 // ======================================================
 
 const scene = new THREE.Scene();
-
 scene.background = new THREE.Color(0x91b9d3);
 scene.fog = new THREE.Fog(0x91b9d3, 90, 450);
 
@@ -74,14 +67,9 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
 document.body.appendChild(renderer.domElement);
 
-// Lighting
-scene.add(
-  new THREE.HemisphereLight(0xe5f4ff, 0x59604c, 2)
-);
-
+scene.add(new THREE.HemisphereLight(0xe5f4ff, 0x59604c, 2));
 const sun = new THREE.DirectionalLight(0xffffff, 2.4);
 sun.position.set(30, 70, 20);
 sun.castShadow = true;
@@ -95,17 +83,14 @@ scene.add(sun);
 const loader = new GLTFLoader();
 const raycaster = new THREE.Raycaster();
 const down = new THREE.Vector3(0, -1, 0);
-
 const mapRoot = new THREE.Group();
 scene.add(mapRoot);
 
 let player = null;
 let mapMeshes = [];
-
 let groundY = 0;
 let verticalVelocity = 0;
 let grounded = false;
-
 let yaw = 0;
 let pitch = 0.18;
 let lastTime = performance.now();
@@ -115,18 +100,16 @@ const looking = { x: 0, y: 0 };
 const keys = new Set();
 
 // ======================================================
-// MAP DOWNLOADER
+// MAP DOWNLOADER — FIXED: early progress ticks so bar moves
 // ======================================================
 
 async function downloadMap(url) {
-  if (!url) {
-    throw new Error("No map URL was found in index.html.");
-  }
+  if (!url) throw new Error("No map URL was found in index.html.");
 
-  setLoading("Connecting to map host...", 0);
+  // ✅ TICK 1 — show immediately so bar isn't frozen at 0
+  setLoading("Connecting to map host...", 5);
 
   let response;
-
   try {
     response = await fetch(url, {
       method: "GET",
@@ -135,7 +118,7 @@ async function downloadMap(url) {
     });
   } catch (error) {
     throw new Error(
-      "Could not access map.glb. Ensure the file is pushed to your repository. " +
+      "Could not access map.glb. Make sure the file exists in your folder. " +
       (error?.message || "")
     );
   }
@@ -144,10 +127,11 @@ async function downloadMap(url) {
     throw new Error(`Map server returned HTTP ${response.status}.`);
   }
 
+  // ✅ TICK 2 — connected, update before reading body
+  setLoading("Connected! Reading map data...", 12);
+
   const contentType = response.headers.get("content-type") || "";
-  const contentLength = Number(
-    response.headers.get("content-length")
-  ) || 0;
+  const contentLength = Number(response.headers.get("content-length")) || 0;
 
   let buffer;
 
@@ -158,56 +142,54 @@ async function downloadMap(url) {
 
     while (true) {
       const result = await reader.read();
-
       if (result.done) break;
 
       chunks.push(result.value);
       received += result.value.byteLength;
 
       if (contentLength > 0) {
-        const percent = Math.min(
-          60,
-          Math.round((received / contentLength) * 60)
-        );
-
+        // map 0→100% download to 12→60% of bar
+        const downloadPercent = received / contentLength;
+        const barPercent = 12 + downloadPercent * 48;
         setLoading(
-          `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
-          percent
+          `Downloading map: ${(received / 1048576).toFixed(1)} MB / ${(contentLength / 1048576).toFixed(1)} MB`,
+          barPercent
         );
       } else {
+        // unknown size — just tick up so it doesn't freeze
+        const fakePct = Math.min(55, 12 + (received / 1048576) * 3);
         setLoading(
           `Downloading map: ${(received / 1048576).toFixed(1)} MB`,
-          0
+          fakePct
         );
       }
     }
 
+    // ✅ TICK 3 — assembling buffer
+    setLoading("Assembling map...", 60);
+
     const combined = new Uint8Array(received);
     let offset = 0;
-
     for (const chunk of chunks) {
       combined.set(chunk, offset);
       offset += chunk.byteLength;
     }
-
     buffer = combined.buffer;
   } else {
-    setLoading("Downloading map...", 10);
+    setLoading("Downloading map...", 20);
     buffer = await response.arrayBuffer();
+    setLoading("Download complete!", 60);
   }
 
   if (buffer.byteLength < 12) {
     throw new Error("The downloaded map is empty or incomplete.");
   }
 
-  const magic = new TextDecoder().decode(
-    new Uint8Array(buffer, 0, 4)
-  );
-
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 4));
   if (magic !== "glTF") {
     throw new Error(
       "The map file is not a valid GLB file. " +
-      `Received content type: ${contentType || "unknown"}.`
+      `Received content-type: ${contentType || "unknown"}.`
     );
   }
 
@@ -220,18 +202,13 @@ async function downloadMap(url) {
 
 function collectMapMeshes(root) {
   const meshes = [];
-
   root.updateMatrixWorld(true);
-
   root.traverse((object) => {
     if (!object.isMesh || !object.geometry) return;
-
     object.castShadow = true;
     object.receiveShadow = true;
-
     meshes.push(object);
   });
-
   return meshes;
 }
 
@@ -246,7 +223,6 @@ async function loadMap() {
 
   mapRoot.add(gltf.scene);
   mapRoot.updateMatrixWorld(true);
-
   mapMeshes = collectMapMeshes(mapRoot);
 
   if (mapMeshes.length === 0) {
@@ -268,12 +244,9 @@ async function loadMap() {
 function preparePlayer(root) {
   const box = new THREE.Box3().setFromObject(root);
   const size = new THREE.Vector3();
-
   box.getSize(size);
 
-  if (size.y > 0.0001) {
-    root.scale.multiplyScalar(PLAYER_HEIGHT / size.y);
-  }
+  if (size.y > 0.0001) root.scale.multiplyScalar(PLAYER_HEIGHT / size.y);
 
   const scaledBox = new THREE.Box3().setFromObject(root);
   root.position.y -= scaledBox.min.y;
@@ -306,10 +279,8 @@ async function loadPlayer() {
   });
 
   player = gltf.scene;
-
   preparePlayer(player);
   scene.add(player);
-
   console.log("Player model loaded.");
 }
 
@@ -321,16 +292,11 @@ function getGroundHeight(x, z, fallbackY) {
   if (mapMeshes.length === 0) return fallbackY;
 
   const origin = new THREE.Vector3(x, fallbackY + 30, z);
-
   raycaster.set(origin, down);
   raycaster.far = 1000;
 
   const hits = raycaster.intersectObjects(mapMeshes, false);
-
-  const hit = hits.find(
-    (item) => item.point.y <= fallbackY + 2.5
-  );
-
+  const hit = hits.find((item) => item.point.y <= fallbackY + 2.5);
   return hit ? hit.point.y : fallbackY;
 }
 
@@ -369,7 +335,6 @@ function setPlayerStart() {
 
 function makeJoystick(element, output) {
   const knob = element.querySelector(".knob");
-
   let pointerId = null;
   let centerX = 0;
   let centerY = 0;
@@ -378,7 +343,6 @@ function makeJoystick(element, output) {
   function reset() {
     output.x = 0;
     output.y = 0;
-
     knob.style.transform = "translate(0px, 0px)";
     pointerId = null;
   }
@@ -388,72 +352,51 @@ function makeJoystick(element, output) {
 
     const dx = event.clientX - centerX;
     const dy = event.clientY - centerY;
-
     const distance = Math.hypot(dx, dy);
-    const scale = distance > maxRadius
-      ? maxRadius / distance
-      : 1;
-
+    const scale = distance > maxRadius ? maxRadius / distance : 1;
     const x = dx * scale;
     const y = dy * scale;
 
     output.x = x / maxRadius;
     output.y = y / maxRadius;
-
     knob.style.transform = `translate(${x}px, ${y}px)`;
   }
 
   element.addEventListener("pointerdown", (event) => {
     event.preventDefault();
-
     pointerId = event.pointerId;
     element.setPointerCapture(pointerId);
 
     const rect = element.getBoundingClientRect();
-
     centerX = rect.left + rect.width / 2;
     centerY = rect.top + rect.height / 2;
     maxRadius = rect.width * 0.27;
-
     update(event);
   });
 
   element.addEventListener("pointermove", update);
-
   element.addEventListener("pointerup", (event) => {
     if (pointerId === event.pointerId) reset();
   });
-
   element.addEventListener("pointercancel", (event) => {
     if (pointerId === event.pointerId) reset();
   });
 }
 
-makeJoystick(
-  document.querySelector("#move-stick"),
-  movement
-);
-
-makeJoystick(
-  document.querySelector("#look-stick"),
-  looking
-);
+makeJoystick(document.querySelector("#move-stick"), movement);
+makeJoystick(document.querySelector("#look-stick"), looking);
 
 // ======================================================
 // JUMP BUTTON
 // ======================================================
 
-document.querySelector("#jump").addEventListener(
-  "pointerdown",
-  (event) => {
-    event.preventDefault();
-
-    if (grounded) {
-      verticalVelocity = JUMP_SPEED;
-      grounded = false;
-    }
+document.querySelector("#jump").addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  if (grounded) {
+    verticalVelocity = JUMP_SPEED;
+    grounded = false;
   }
-);
+});
 
 // ======================================================
 // KEYBOARD CONTROLS
@@ -462,10 +405,7 @@ document.querySelector("#jump").addEventListener(
 window.addEventListener("keydown", (event) => {
   keys.add(event.code);
 
-  if (
-    ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]
-      .includes(event.code)
-  ) {
+  if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(event.code)) {
     event.preventDefault();
   }
 
@@ -475,13 +415,8 @@ window.addEventListener("keydown", (event) => {
   }
 }, { passive: false });
 
-window.addEventListener("keyup", (event) => {
-  keys.delete(event.code);
-});
-
-window.addEventListener("blur", () => {
-  keys.clear();
-});
+window.addEventListener("keyup", (event) => keys.delete(event.code));
+window.addEventListener("blur", () => keys.clear());
 
 // ======================================================
 // MOVEMENT INPUT
@@ -497,11 +432,7 @@ function getInput() {
   if (keys.has("KeyS") || keys.has("ArrowDown")) y += 1;
 
   const length = Math.hypot(x, y);
-
-  if (length > 1) {
-    x /= length;
-    y /= length;
-  }
+  if (length > 1) { x /= length; y /= length; }
 
   return { x, y };
 }
@@ -514,22 +445,11 @@ function updateGame(dt) {
   if (!player) return;
 
   yaw -= looking.x * dt * 2.4;
-
-  pitch = THREE.MathUtils.clamp(
-    pitch - looking.y * dt * 1.8,
-    -0.45,
-    0.85
-  );
+  pitch = THREE.MathUtils.clamp(pitch - looking.y * dt * 1.8, -0.45, 0.85);
 
   const input = getInput();
-
-  const forward = new THREE.Vector3(
-    -Math.sin(yaw), 0, -Math.cos(yaw)
-  );
-
-  const right = new THREE.Vector3(
-    Math.cos(yaw), 0, -Math.sin(yaw)
-  );
+  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
 
   const move = new THREE.Vector3()
     .addScaledVector(forward, -input.y)
@@ -537,26 +457,17 @@ function updateGame(dt) {
 
   if (move.lengthSq() > 0.0001) {
     move.normalize();
-
     player.position.x += move.x * MOVE_SPEED * dt;
     player.position.z += move.z * MOVE_SPEED * dt;
-
     player.rotation.y = Math.atan2(move.x, move.z);
   }
 
-  const floor = getGroundHeight(
-    player.position.x,
-    player.position.z,
-    groundY
-  );
+  const floor = getGroundHeight(player.position.x, player.position.z, groundY);
 
   verticalVelocity -= GRAVITY * dt;
   player.position.y += verticalVelocity * dt;
 
-  if (
-    player.position.y <= floor + 0.04 &&
-    verticalVelocity <= 0
-  ) {
+  if (player.position.y <= floor + 0.04 && verticalVelocity <= 0) {
     player.position.y = floor + 0.04;
     verticalVelocity = 0;
     grounded = true;
@@ -570,18 +481,13 @@ function updateGame(dt) {
   );
 
   const horizontal = Math.cos(pitch) * CAMERA_DISTANCE;
-
   const cameraOffset = new THREE.Vector3(
     Math.sin(yaw) * horizontal,
     Math.sin(pitch) * CAMERA_DISTANCE + 1,
     Math.cos(yaw) * horizontal
   );
 
-  camera.position.lerp(
-    target.clone().add(cameraOffset),
-    1 - Math.exp(-8 * dt)
-  );
-
+  camera.position.lerp(target.clone().add(cameraOffset), 1 - Math.exp(-8 * dt));
   camera.lookAt(target);
 }
 
@@ -591,10 +497,8 @@ function updateGame(dt) {
 
 function animate(now = performance.now()) {
   requestAnimationFrame(animate);
-
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
-
   updateGame(dt);
   renderer.render(scene, camera);
 }
@@ -606,33 +510,31 @@ function animate(now = performance.now()) {
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-
   renderer.setSize(window.innerWidth, window.innerHeight);
-
-  renderer.setPixelRatio(
-    Math.min(window.devicePixelRatio || 1, 1.75)
-  );
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 });
 
 // ======================================================
-// START GAME
+// START
 // ======================================================
 
 async function startGame() {
   try {
+    // ✅ immediate tick so bar moves from frame 1
+    setLoading("Starting game...", 2);
+    await new Promise(r => setTimeout(r, 30)); // let browser paint
+
     await loadMap();
     await loadPlayer();
 
     setLoading("Setting up game...", 98);
     setPlayerStart();
-
     setLoading("Ready!", 100);
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise(r => setTimeout(r, 250));
 
     loading.style.display = "none";
     hud.style.display = "block";
-
     lastTime = performance.now();
     animate();
   } catch (error) {
